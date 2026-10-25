@@ -1,0 +1,64 @@
+name: Publier le site
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+  schedule:
+    # Tous les jours vers 3 h 15 (heure de Paris) : horaires TAO à jour
+    - cron: '15 1 * * *'
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Préparer les horaires TAO
+        run: |
+          mkdir -p _site
+          cp -r web/. _site/
+          python3 tools/build_data.py _site --days 3
+
+      - name: Insérer les clés publiques
+        env:
+          CARTO_API_KEY: ${{ secrets.CARTO_API_KEY }}
+          PROXY_URL: ${{ secrets.PROXY_URL }}
+        run: |
+          python3 - <<'EOF'
+          import os, pathlib
+          p = pathlib.Path('_site/js/config.js')
+          s = p.read_text(encoding='utf-8')
+          s = s.replace('__CARTO_API_KEY__', os.environ.get('CARTO_API_KEY', '') or '__CARTO_API_KEY__')
+          s = s.replace('__PROXY_URL__', os.environ.get('PROXY_URL', '') or '__PROXY_URL__')
+          p.write_text(s, encoding='utf-8')
+          EOF
+          sed -i "s/ot-shell-v1/ot-shell-${GITHUB_RUN_NUMBER}/" _site/sw.js
+          touch _site/.nojekyll
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
